@@ -1,14 +1,13 @@
 # Refactor
 
-A plugin for Lite XL that adds the `find-replace-text-in-project` functionality.
+A plugin for Lite XL that adds the `find-to-replace-text-in-project` functionality.
 
-## Inspiration
+> [!NOTE]
+> This plugin is heavily WIP, not even in alpha state!
 
-https://github.com/pragtical/pragtical/pull/48
+## Features
 
-## TODO
-
-- Find functionalities to override:
-  - `./data/core/doc/search.lua`
-  - `./data/plugins/projectsearch`
-
+- Dedicated Tab to display a preview of the search/replacement process
+- Toggle result to exclude search instance from being replaced
+- Virtual lines to collapse all search instances within the same file (like in treeview/todotreeview/logview)
+- Highlight matched text with red and new text with green

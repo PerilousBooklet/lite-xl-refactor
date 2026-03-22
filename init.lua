@@ -1,42 +1,61 @@
 -- mod-version:3
-
-local core = require "core"
 local command = require "core.command"
 local keymap = require "core.keymap"
-local SearchReplaceList = require "widgets.searchreplacelist"
 
--- TODO: add file(s) manipulation
 
-local refactor = {}
+----------------
+-- Brainstorm --
+----------------
 
-local RefactorView = SearchReplaceList:extend()
+-- 1. draw the tabview
+-- 2. make sure there can only be one at a time
+-- 3. draw a few example items (complete with sub-items and square toggle buttons)
+-- 4. extend the existing text search to project-wide
+-- 5. draw colored backgrounds for matched and new text
+-- 6. draw some kind of confirmation button
+-- 7. 
 
-function RefactorView:new()
-	RefactorView.super.new(self)
-	self.scrollable = true
-end
 
-function RefactorView:get_name()
-	return "Refactor"
-end
+-----------------------------
+-- REFERENCE DOCS TO STUDY --
+-----------------------------
 
-function RefactorView:get_scrollable_size()
-  return 1.2 * self.size.y
-end
+-- jgmdev's implementation
+-- https://github.com/pragtical/pragtical/pull/48
+-- https://github.com/pragtical/widget/commits/master/searchreplacelist.lua
 
-function RefactorView:draw()
-	self:draw_background(style.background)
-  self:draw_scrollbar()
-end
+-- which files to read from:
+-- 1. ./data/core/doc/search.lua
+-- 2. ./data/plugins/projectsearch.lua (?)
+-- 3. https://github.com/pragtical/widget/blob/master/searchreplacelist.lua (for the square toggle button)
 
-command.add("core.docview", {
-  ["refactor:open"] = function ()
-    core.root_view:get_active_node():add_view(RefactorView())
+-- Reusing existing code from other plugins
+-- 1. Lite XL's logging tab toggable lines
+-- 2. jgmdev's refactor PR's togglable button
+-- 3. lite-xl-fullbar's bar to add a bottom bar to an EmptyView, 
+--    the 2 buttons should be placed in the center of the bar
+
+
+----------
+-- Init --
+----------
+
+-- ?
+
+
+--------------
+-- COMMANDS --
+--------------
+
+command.add(nil, {
+  ["refactor:find-to-replace-text-in-project"] = function ()
+  	-- ...
   end
 })
 
-keymap.add({
-  ["alt+f6"] = "refactor:open"
-})
 
-return refactor
+-----------------
+-- Keybindings --
+-----------------
+
+keymap.add({ ["ctrl+shift+r"] = "refactor:find-to-replace-text-in-project" })
