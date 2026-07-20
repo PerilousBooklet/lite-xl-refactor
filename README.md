@@ -1,9 +1,11 @@
 # Refactor
 
+![refactor](../images/refactor.png)
+
 A plugin for Lite XL that adds advanced refactoring functionality.
 
 > [!NOTE]
-> This plugin is heavily WIP, not even in alpha state!
+> This plugin is in BETA!
 
 ## Features
 
