@@ -1,6 +1,6 @@
 # Refactor
 
-![refactor](../images/refactor.png)
+![refactor](./images/refactor.png)
 
 A plugin for Lite XL that adds advanced refactoring functionality.
 
