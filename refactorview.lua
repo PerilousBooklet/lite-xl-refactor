@@ -270,7 +270,14 @@ function RefactorView:on_mouse_pressed(button, px, py, clicks)
     if point_in_rect(px, py, x, y, w, h) then
       local cb_x = x + style.padding.x
       local cb_y = y + common.round((h - CHECKBOX_SIZE) / 2)
-      local on_checkbox = point_in_rect(px, py, cb_x, cb_y, CHECKBOX_SIZE, CHECKBOX_SIZE)
+
+      local on_checkbox = nil
+      if kind == "file" then
+        on_checkbox = point_in_rect(px, py, cb_x, cb_y, CHECKBOX_SIZE, CHECKBOX_SIZE)
+      else
+        -- NOTE: the padding for line-type items is `style.padding.x`
+        on_checkbox = point_in_rect(px, py, cb_x + style.padding.x, cb_y, CHECKBOX_SIZE, CHECKBOX_SIZE)
+      end
 
       if kind == "file" then
         if on_checkbox then
@@ -363,6 +370,7 @@ function RefactorView:draw()
         local label = arrow .. item.filename .. "  (" .. #item.matches .. ")"
         common.draw_text(style.font, style.text, label, "left", tx, y, w, lh)
       else
+        tx = tx + style.padding.x
         draw_checkbox(tx, cb_y, match.selected)
         tx = tx + CHECKBOX_SIZE + style.padding.x
 
