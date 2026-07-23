@@ -321,7 +321,9 @@ function RefactorView:open_match(item, match)
   local ok, doc = pcall(core.open_doc, item.filename)
   if ok and doc then
     local dv = core.root_view:open_doc(doc)
-    doc:set_selection(match.line, match.col or 1, match.line, match.col or 1)
+    local col1 = match.col or 1
+    local col2 = col1 + #self.find_text
+    doc:set_selection(match.line, col1, match.line, col2)
     center_on_line(dv, match.line)
   end
 end
