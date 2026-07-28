@@ -15,6 +15,8 @@ local keymap = require "core.keymap"
 local fsutils = require "plugins.refactor.fsutils"
 local TreeView = require "plugins.treeview"
 
+-- TODO: make sure the chevron icon doesn't expand when changing direction
+
 -- ---------------------------------------------------------------------------
 -- small helpers
 -- ---------------------------------------------------------------------------
@@ -501,7 +503,8 @@ function RefactorView:draw()
         if self.icon_font then
           local glyph = is_expanded(self, item) and chevron_glyphs.expanded or chevron_glyphs.collapsed
           tx = draw_expand_chevron(self.icon_font, glyph, tx, y, lh, style.text)
-          tx = tx + style.padding.x / 4
+          -- WIP: set proper fixed width
+          tx = tx + style.padding.x / 2
         else
           -- discovery failed (e.g. TreeView's internals changed enough
           -- that no draw_text call happened) -- fall back to a plain

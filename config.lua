@@ -21,6 +21,8 @@
 --                      project-relative path (extension-less; comparison
 --                      against the moved file is done extension-agnostic)
 
+-- TODO: convert this config file to a module system like in lite-xl-ptm
+
 local config = {}
 
 function config.to_unix(path)
@@ -82,6 +84,10 @@ function config.relative_path(target, from_dir)
   local rel = table.concat(rel_parts, "/")
   return rel ~= "" and rel or "."
 end
+
+----------------------
+-- Language Support --
+----------------------
 
 config.languages = {
 
@@ -163,6 +169,12 @@ config.languages = {
       return (import_str:gsub("%.", "/"))
     end,
   },
+
+  -- TODO: Java
+  -- TODO: Go
+  -- TODO: C
+  -- TODO: C++
+  -- TODO: PHP
 
 }
 
