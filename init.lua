@@ -10,12 +10,16 @@ local RefactorView = require "plugins.refactor.refactorview"
 
 -- FIX: when changing project, fsutils lib is missing
 
+-- TODO: allow choosing sub-folder from within which to search for refactoring (useful when the codebase is huge)
+-- TODO: allow regex use
+-- TODO: HIGH PRIORITY: check reliability of regex handling logic
+
 -- TODO: HIGH PRIORITY: check reliability of search logic
 -- TODO: HIGH PRIORITY: check reliability of replacement logic
 -- TODO: HIGH PRIORITY: check reliability of folder-and-its-contents move logic
 
--- TODO: allow regex use
--- TODO: HIGH PRIORITY: check reliability of regex handling logic
+-- REVIEW: remove unnecessary comments
+-- REVIEW: full code review
 
 local function open_refactor_view(find_text, replace_text)
   local node = core.root_view:get_active_node_default()
