@@ -180,6 +180,38 @@ config.languages = {
     end,
   },
 
+  css = {
+    extensions = { "css" },
+    import_patterns = {
+      -- @import "./foo.css";  or  @import './foo.css';
+      "@import%s+[\"'](%.[%w%.%_%-/]+)[\"']",
+      -- @import url(./foo.css);  or  @import url('./foo.css');
+      -- quotes inside url() are optional per the CSS spec, hence the "?"
+      "@import%s+url%(%s*[\"']?(%.[%w%.%_%-/]+)[\"']?%s*%)",
+      -- generic url(...) references: background-image, @font-face src, etc.
+      -- NOTE: this pattern's captures overlap with the "@import url(...)"
+      -- one above -- once that pattern rewrites an @import url(...) line,
+      -- this one will match the (already-updated) result too and call
+      -- import_to_path on the new string, which resolves to itself and
+      -- is filtered out as a no-op change. Harmless, just redundant work.
+      "url%(%s*[\"']?(%.[%w%.%_%-/]+)[\"']?%s*%)",
+    },
+    only_relative = true,
+    -- like HTML (and unlike JS), a CSS url()/@import reference keeps its
+    -- file extension, so no strip_ext here
+    path_to_import = function(rel_path)
+      local unix_path = config.to_unix(rel_path)
+      if not unix_path:match("^%.%.?/") then
+        unix_path = "./" .. unix_path
+      end
+      return unix_path
+    end,
+    import_to_path = function(import_str, importer_dir)
+      local combined = (importer_dir ~= "" and (importer_dir .. "/") or "") .. import_str
+      return config.normalize_rel(combined)
+    end,
+  },
+
   python = {
     extensions = { "py" },
     import_patterns = {
