@@ -9,11 +9,11 @@ local TreeView = require "plugins.treeview"
 local RefactorView = require "plugins.refactor.refactorview"
 
 -- FIX: when changing project, fsutils lib is missing
+-- FIX: HIGH PRIORITY: the search is not recursive (searches with folder-hierarchy-depth = 2)
 
--- TODO: allow choosing sub-folder from within which to search for refactoring (useful when the codebase is huge)
--- TODO: allow regex use
+-- TODO: choose sub-folder from within which to search for refactoring (useful when the codebase is huge)
+-- TODO: regex support
 -- TODO: HIGH PRIORITY: check reliability of regex handling logic
-
 -- TODO: HIGH PRIORITY: check reliability of search logic
 -- TODO: HIGH PRIORITY: check reliability of replacement logic
 -- TODO: HIGH PRIORITY: check reliability of folder-and-its-contents move logic
