@@ -4,15 +4,11 @@ local command = require "core.command"
 local keymap = require "core.keymap"
 local fsutils = require "plugins.refactor.fsutils"
 local movefile = require "plugins.refactor.movefile"
-
 local TreeView = require "plugins.treeview"
 local RefactorView = require "plugins.refactor.refactorview"
 
--- FIX: when changing project, fsutils lib is missing
--- FIX: HIGH PRIORITY: the search is not recursive (searches with folder-hierarchy-depth = 2)
-
--- TODO: choose sub-folder from within which to search for refactoring (useful when the codebase is huge)
 -- TODO: regex support
+
 -- TODO: HIGH PRIORITY: check reliability of regex handling logic
 -- TODO: HIGH PRIORITY: check reliability of search logic
 -- TODO: HIGH PRIORITY: check reliability of replacement logic
@@ -21,9 +17,12 @@ local RefactorView = require "plugins.refactor.refactorview"
 -- REVIEW: remove unnecessary comments
 -- REVIEW: full code review
 
-local function open_refactor_view(find_text, replace_text)
+-- `scope_dir`, if given, is a project-relative folder path limiting the
+-- search/replacement to files nested under it; nil searches the whole
+-- project, same as before.
+local function open_refactor_view(find_text, replace_text, scope_dir)
   local node = core.root_view:get_active_node_default()
-  node:add_view(RefactorView(find_text, replace_text))
+  node:add_view(RefactorView(find_text, replace_text, scope_dir))
 end
 
 command.add(nil, {
@@ -40,6 +39,29 @@ command.add(nil, {
     })
   end,
 })
+
+-- Same as refactor:find-and-replace, but scoped to whichever folder is
+-- hovered in the tree view, instead of the whole project.
+command.add(
+  function()
+    return TreeView.hovered_item ~= nil and TreeView.hovered_item.type == "dir"
+  end,
+  {
+    ["refactor:find-and-replace-in-folder"] = function()
+      local scope_dir = fsutils.to_project_rel(TreeView.hovered_item.abs_filename)
+      core.command_view:enter("Find in " .. scope_dir, {
+        submit = function(find_text)
+          if find_text == "" then return end
+          core.command_view:enter("Replace with", {
+            submit = function(replace_text)
+              open_refactor_view(find_text, replace_text or "", scope_dir)
+            end,
+          })
+        end,
+      })
+    end,
+  }
+)
 
 -- Refactor a file/folder
 -- works on both files and directories -- only requires something in the
@@ -65,6 +87,17 @@ treeview_menu:register(
     {
       text = "Move",
       command = "refactor:move-file"
+    }
+  }
+)
+treeview_menu:register(
+  function()
+    return TreeView.hovered_item and TreeView.hovered_item.type == "dir"
+  end,
+  {
+    {
+      text = "Find & Replace in folder...",
+      command = "refactor:find-and-replace-in-folder"
     }
   }
 )

@@ -84,25 +84,57 @@ function fsutils.project_dir()
   return core.project_dir or core.root_project().path
 end
 
+--- Converts an absolute path to a project-relative, unix-style path.
+-- Shared by movefile.lua (move destination prompts) and init.lua (the
+-- folder-scoped refactor context-menu command) so both compute this the
+-- same way.
+-- @param string abs_path Absolute path, expected to be inside the project
+function fsutils.to_project_rel(abs_path)
+  local project_dir = fsutils.project_dir()
+  local rel = abs_path
+  if rel:sub(1, #project_dir) == project_dir then
+    rel = rel:sub(#project_dir + 2) -- strip "project_dir" + separator
+  end
+  return (rel:gsub("\\", "/"))
+end
+
 --- Lists every regular file in the project, as paths relative to the
 -- project root. Prefers core's own (already-filtered, already-ignored-dirs)
 -- index when available, falling back to a manual recursive scan.
--- Shared by refactorview.lua (project-wide find) and movefile.lua
--- (import-reference scanning) so both stay in sync.
-function fsutils.collect_project_files()
-  local files = {}
+-- Shared by refactorview.lua (project-wide or folder-scoped find) and
+-- movefile.lua (import-reference scanning) so both stay in sync.
+-- @param string|nil dir_rel If given, only files nested under this
+--        project-relative folder are returned. nil/empty means the
+--        whole project.
+function fsutils.collect_project_files(dir_rel)
+  local prefix = nil
+  if dir_rel and dir_rel ~= "" then
+    prefix = (dir_rel:gsub("\\", "/"):gsub("/+$", "")) .. "/"
+  end
 
-  if core.project_files then
+  local function matches_prefix(relname)
+    if not prefix then return true end
+    relname = relname:gsub("\\", "/")
+    return relname:sub(1, #prefix) == prefix
+  end
+
+  -- NOTE: checking #core.project_files > 0 here (rather than the old
+  -- "if #files > 0 then return files end" after filtering) matters for
+  -- the scoped case: a folder can legitimately contain zero matching
+  -- files, and that must return an empty list, not silently fall through
+  -- to a full unscoped scan of the whole project.
+  if core.project_files and #core.project_files > 0 then
+    local files = {}
     for _, entry in ipairs(core.project_files) do
-      if entry.type == "file" then
+      if entry.type == "file" and matches_prefix(entry.filename) then
         table.insert(files, entry.filename)
       end
     end
+    return files
   end
 
-  if #files > 0 then return files end
-
   -- fallback: walk the project directory manually
+  local files = {}
   local function scan(dir, rel)
     local list = system.list_dir(dir) or {}
     for _, name in ipairs(list) do
@@ -113,7 +145,7 @@ function fsutils.collect_project_files()
         if info then
           if info.type == "dir" then
             scan(abs, relname)
-          else
+          elseif matches_prefix(relname) then
             table.insert(files, relname)
           end
         end

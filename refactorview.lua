@@ -1,10 +1,10 @@
 -- A View (modeled directly on core/logview.lua) that shows the results of a
--- project-wide "find" as a list of files. Each file row can be clicked to
--- unroll a "curtain" showing every matching line inside that file. Both file
--- rows and individual match rows have a small checkbox at the start of the
--- row that toggles whether that file/line should be included when the
--- replacement is finally applied via the button drawn at the bottom of the
--- view.
+-- project-wide (or folder-scoped) "find" as a list of files. Each file row
+-- can be clicked to unroll a "curtain" showing every matching line inside
+-- that file. Both file rows and individual match rows have a small
+-- checkbox at the start of the row that toggles whether that file/line
+-- should be included when the replacement is finally applied via the
+-- button drawn at the bottom of the view.
 --
 -- The generic scrolling/zoom/checkbox/curtain machinery all lives in
 -- matchlistview.lua now (shared with MoveView); this file only supplies
@@ -36,23 +36,32 @@ local RefactorView = MatchListView:extend()
 
 function RefactorView:__tostring() return "RefactorView" end
 
-function RefactorView:new(find_text, replace_text)
+-- `scope_dir`, if given, is a project-relative folder path; the search
+-- (and eventual replacement) is limited to files nested under it. nil
+-- means "search the whole project", same as before.
+function RefactorView:new(find_text, replace_text, scope_dir)
   RefactorView.super.new(self)
 
   self.find_text = find_text
   self.replace_text = replace_text or ""
+  self.scope_dir = scope_dir
 
   self.searching = true
   self.files_scanned = 0
   self.files_total = 0
 
   core.status_view:show_message("i", style.text,
-    "click a file to expand it, click a square to (de)select, then hit Replace")
+    self.scope_dir
+      and ("click a file to expand it, click a square to (de)select, then hit Replace (scoped to " .. self.scope_dir .. ")")
+      or "click a file to expand it, click a square to (de)select, then hit Replace")
 
   self:begin_search()
 end
 
 function RefactorView:get_name()
+  if self.scope_dir then
+    return "Refactor: " .. self.find_text .. " (in " .. self.scope_dir .. ")"
+  end
   return "Refactor: " .. self.find_text
 end
 
@@ -108,15 +117,16 @@ local function is_probably_binary(chunk)
 end
 
 -- delegates to fsutils so this listing logic is shared with movefile.lua
--- instead of being duplicated in two places
-local function collect_project_files()
-  return fsutils.collect_project_files()
+-- instead of being duplicated in two places. `scope_dir`, if given,
+-- limits the listing to that project-relative folder.
+local function collect_project_files(scope_dir)
+  return fsutils.collect_project_files(scope_dir)
 end
 
 function RefactorView:begin_search()
   local view = self
   core.add_thread(function()
-    local files = collect_project_files()
+    local files = collect_project_files(view.scope_dir)
     view.files_total = #files
 
     for _, relname in ipairs(files) do
