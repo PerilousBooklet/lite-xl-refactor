@@ -35,27 +35,47 @@ local movefile = {}
 -- language lookup
 -- ---------------------------------------------------------------------------
 
+-- built once at module load: extension (no dot) -> language table.
+-- Previously find_language did a linear scan over every language's
+-- extension list on every call (once per file per pass -- preview and
+-- perform each scan the whole project, so this ran twice per file per
+-- move); this makes each lookup O(1) instead of
+-- O(#languages * #extensions_per_language).
+local ext_to_lang = {}
+for _, lang in pairs(langconfig.languages) do
+  for _, e in ipairs(lang.extensions) do
+    ext_to_lang[e] = lang
+  end
+end
+
 local function find_language(rel_path)
   local ext = rel_path:match("%.([%w_]+)$")
   if not ext then return nil end
-  for _, lang in pairs(langconfig.languages) do
-    for _, e in ipairs(lang.extensions) do
-      if e == ext then return lang end
-    end
-  end
-  return nil
+  return ext_to_lang[ext]
 end
 
 -- ---------------------------------------------------------------------------
 -- pattern-based rewriting
 --
--- `import_patterns` in config.lua each have exactly one capture group: the
--- import/module string itself. We can't just gsub(pattern, replacement)
--- because whether/how to replace depends on runtime state (does this
--- import resolve to something that moved?). So we manually walk matches,
--- locate the capture's exact byte range inside the full match, and splice
--- in a replacement only for that range -- everything else (require(...),
--- quote style, whitespace) is left untouched.
+-- `import_patterns` in config.lua each have exactly one STRING capture
+-- group -- the import/module string itself -- bracketed by two POSITION
+-- captures (see the contract documented at the top of config.lua). We
+-- can't just gsub(pattern, replacement) because whether/how to replace
+-- depends on runtime state (does this import resolve to something that
+-- moved?). So we manually walk matches, and splice in a replacement only
+-- for the captured string's exact byte range -- everything else
+-- (require(...), quote style, whitespace) is left untouched.
+--
+-- content:find(pattern, init) returns (s, e, cap_s, cap, cap_after) for
+-- a pattern shaped "...()(capture)()...": cap_s and cap_after are the
+-- two position captures (byte offsets), with cap_after pointing one past
+-- the end of the captured text -- i.e. cap_e = cap_after - 1. Reading
+-- the offsets directly this way (rather than re-searching the whole
+-- matched text for the captured substring as plain text, as an earlier
+-- version of this function did) matters whenever the captured text can
+-- also occur earlier in the same match -- e.g. Go's aliased import
+-- `fmt "fmt"`, where searching `whole` for "fmt" would find the alias
+-- token first and splice the wrong range.
 --
 -- The callback receives (cap, cap_s, content): the captured import
 -- string, its starting byte offset, and the content it was found in (as
@@ -65,21 +85,24 @@ end
 -- movefile used to have inline) can simply ignore them.
 -- ---------------------------------------------------------------------------
 
-local function replace_pattern(content, pattern, callback)
+-- `in_scope`, if given, is a function(cap_s) -> bool; a match whose
+-- capture start falls outside it is skipped entirely (as if it never
+-- matched at all), rather than being offered to `callback`. Used by
+-- Go's grouped-import pattern (see import_block_patterns in config.lua)
+-- to ignore matches outside real "import ( ... )" blocks. `content` and
+-- `cap_s` passed to `callback` always stay relative to the FULL content
+-- passed into this function -- restricting matches to a scope does not
+-- mean scanning a substring, which would otherwise throw off the
+-- line-number bookkeeping process_file_imports does downstream.
+local function replace_pattern(content, pattern, callback, in_scope)
   local out = {}
   local last = 1
   local init = 1
   while true do
-    local s, e, cap = content:find(pattern, init)
+    local s, e, cap_s, cap, cap_after = content:find(pattern, init)
     if not s then break end
-    if cap then
-      local whole = content:sub(s, e)
-      local rel = whole:find(cap, 1, true)
-      local cap_s, cap_e = s, e
-      if rel then
-        cap_s = s + rel - 1
-        cap_e = cap_s + #cap - 1
-      end
+    if cap and cap_s and cap_after and (not in_scope or in_scope(cap_s)) then
+      local cap_e = cap_after - 1
       local replacement = callback(cap, cap_s, content)
       if replacement and replacement ~= cap then
         table.insert(out, content:sub(last, cap_s - 1))
@@ -94,9 +117,43 @@ local function replace_pattern(content, pattern, callback)
   return table.concat(out)
 end
 
+-- finds every non-overlapping span matched by `block_pattern` in
+-- `content`, returning a predicate(pos) -> bool that's true when pos
+-- falls inside one of those spans. Returns nil (meaning "no
+-- restriction, everything in scope") if block_pattern itself is nil.
+local function compute_in_scope(content, block_pattern)
+  if not block_pattern then return nil end
+  local spans = {}
+  local init = 1
+  while true do
+    local s, e = content:find(block_pattern, init)
+    if not s then break end
+    table.insert(spans, { s = s, e = e })
+    if e < init then break end
+    init = e + 1
+  end
+  if #spans == 0 then
+    -- an explicit function that always returns false is important here
+    -- -- returning nil would mean "no restriction", the opposite of
+    -- what "the block pattern matched nowhere" should mean
+    return function() return false end
+  end
+  return function(pos)
+    for _, span in ipairs(spans) do
+      if pos >= span.s and pos <= span.e then return true end
+    end
+    return false
+  end
+end
+
 local function rewrite_imports(content, lang, resolve_fn)
-  for _, pattern in ipairs(lang.import_patterns) do
-    content = replace_pattern(content, pattern, resolve_fn)
+  for i, pattern in ipairs(lang.import_patterns) do
+    local block_pattern = lang.import_block_patterns and lang.import_block_patterns[i]
+    -- recomputed against the current (possibly already-rewritten-by-an-
+    -- earlier-pattern) content each iteration, since block spans can
+    -- shift as earlier patterns in this same pass splice in replacements
+    local in_scope = compute_in_scope(content, block_pattern)
+    content = replace_pattern(content, pattern, resolve_fn, in_scope)
   end
   return content
 end
@@ -309,7 +366,24 @@ local function validate_and_build_mapping(old_rel, new_rel)
   local old_abs = project_dir .. PATHSEP .. old_rel:gsub("/", PATHSEP)
   local new_abs = project_dir .. PATHSEP .. new_rel:gsub("/", PATHSEP)
 
-  if fsutils.is_object_exist(new_abs) then
+  -- On case-insensitive filesystems (default on macOS and Windows),
+  -- old_abs and new_abs can both resolve to the SAME on-disk object when
+  -- the move is a pure case-rename (e.g. "Foo.js" -> "foo.js") -- in
+  -- that situation is_object_exist(new_abs) is true, but it isn't a
+  -- real collision, it's a case-only rename that os.rename handles just
+  -- fine on those filesystems. Detected here via a lowercase string
+  -- comparison rather than a real same-inode check, since Lite XL's
+  -- `system` module doesn't expose inode/file-id info to check that
+  -- directly -- good enough for the common case-rename shape, though a
+  -- case-sensitive filesystem never needs (or hits) this branch at all,
+  -- since there old_abs and new_abs would already differ as distinct
+  -- files if their casing differs.
+  local dest_exists = fsutils.is_object_exist(new_abs)
+  local case_only_rename = dest_exists
+    and old_rel ~= new_rel
+    and old_abs:lower() == new_abs:lower()
+
+  if dest_exists and not case_only_rename then
     return nil, "destination already exists: " .. new_rel
   end
   if not fsutils.is_object_exist(old_abs) then
@@ -415,9 +489,18 @@ end
 -- `selection`, if given, is { [pre_move_relname] = { [line_no] = false } }
 -- as built by MoveView -- see make_line_selector above. Omit it to apply
 -- every detected import rewrite unconditionally (the original behavior).
+--
+-- `skip_rewrite_scan`, if true, skips step 3 below (the full
+-- project-wide read/scan/rewrite pass) entirely. This is an internal-
+-- only parameter: it must ONLY be passed when the caller already knows,
+-- from a movefile.preview() run moments earlier with no intervening
+-- yield (i.e. nothing else could have touched the project's files in
+-- between), that zero references exist to rewrite -- see
+-- movefile.open_preview's zero-reference fast path below. Passing this
+-- from anywhere else would silently skip real import rewrites.
 -- ---------------------------------------------------------------------------
 
-function movefile.perform(old_rel, new_rel, selection)
+function movefile.perform(old_rel, new_rel, selection, skip_rewrite_scan)
   local data, err = validate_and_build_mapping(old_rel, new_rel)
   if not data then
     core.error("refactor: %s", err)
@@ -459,53 +542,58 @@ function movefile.perform(old_rel, new_rel, selection)
   --    either (a) points at something that moved, or (b) is written by a
   --    file that itself moved and so needs re-expressing relative to its
   --    new location, even if the thing it points at didn't move.
-  for _, relname in ipairs(fsutils.collect_project_files()) do
-    relname = langconfig.to_unix(relname)
-    local lang = find_language(relname)
+  --    Skipped entirely when the caller already confirmed (via a
+  --    just-run preview) that there's nothing to rewrite -- see the
+  --    skip_rewrite_scan doc comment above.
+  if not skip_rewrite_scan then
+    for _, relname in ipairs(fsutils.collect_project_files()) do
+      relname = langconfig.to_unix(relname)
+      local lang = find_language(relname)
 
-    if lang then
-      local old_rel_for_this = rev_mapping[relname]
-      local old_importer_dir, new_importer_dir
-      if old_rel_for_this then
-        old_importer_dir = langconfig.dirname(old_rel_for_this)
-        new_importer_dir = langconfig.dirname(relname)
-      else
-        old_importer_dir = langconfig.dirname(relname)
-        new_importer_dir = old_importer_dir
-      end
-
-      local abs = project_dir .. PATHSEP .. relname:gsub("/", PATHSEP)
-      local fp = io.open(abs, "rb")
-      if fp then
-        local content = fp:read("*a") or ""
-        fp:close()
-
-        -- a preview (if there was one) keyed its selection by each
-        -- file's *pre-move* name -- this loop runs post-move, so a file
-        -- that just relocated needs to be looked up under its old name
-        local selector_key = old_rel_for_this or relname
-        local is_line_selected = make_line_selector(selection, selector_key)
-
-        local new_content, changes = process_file_imports(
-          content, lang, old_importer_dir, new_importer_dir,
-          data.mapping_by_exact, data.mapping_by_noext, is_line_selected
-        )
-
-        local applied = 0
-        for _, c in ipairs(changes) do
-          if not is_line_selected or is_line_selected(c.line) then
-            applied = applied + 1
-          end
+      if lang then
+        local old_rel_for_this = rev_mapping[relname]
+        local old_importer_dir, new_importer_dir
+        if old_rel_for_this then
+          old_importer_dir = langconfig.dirname(old_rel_for_this)
+          new_importer_dir = langconfig.dirname(relname)
+        else
+          old_importer_dir = langconfig.dirname(relname)
+          new_importer_dir = old_importer_dir
         end
 
-        if applied > 0 then
-          local wf = io.open(abs, "wb")
-          if wf then
-            wf:write(new_content)
-            wf:close()
-            files_changed = files_changed + 1
-            imports_changed = imports_changed + applied
-            reload_if_open(relname, abs)
+        local abs = project_dir .. PATHSEP .. relname:gsub("/", PATHSEP)
+        local fp = io.open(abs, "rb")
+        if fp then
+          local content = fp:read("*a") or ""
+          fp:close()
+
+          -- a preview (if there was one) keyed its selection by each
+          -- file's *pre-move* name -- this loop runs post-move, so a file
+          -- that just relocated needs to be looked up under its old name
+          local selector_key = old_rel_for_this or relname
+          local is_line_selected = make_line_selector(selection, selector_key)
+
+          local new_content, changes = process_file_imports(
+            content, lang, old_importer_dir, new_importer_dir,
+            data.mapping_by_exact, data.mapping_by_noext, is_line_selected
+          )
+
+          local applied = 0
+          for _, c in ipairs(changes) do
+            if not is_line_selected or is_line_selected(c.line) then
+              applied = applied + 1
+            end
+          end
+
+          if applied > 0 then
+            local wf = io.open(abs, "wb")
+            if wf then
+              wf:write(new_content)
+              wf:close()
+              files_changed = files_changed + 1
+              imports_changed = imports_changed + applied
+              reload_if_open(relname, abs)
+            end
           end
         end
       end
@@ -514,7 +602,11 @@ function movefile.perform(old_rel, new_rel, selection)
 
   reload_if_open(data.new_rel, data.new_abs)
 
-  if data.moved_has_known_language then
+  if skip_rewrite_scan then
+    core.status_view:show_message("i", nil, string.format(
+      "moved %s -> %s (no references needed updating)",
+      data.old_rel, data.new_rel))
+  elseif data.moved_has_known_language then
     core.status_view:show_message("i", nil, string.format(
       "moved %s -> %s (%d import(s) updated across %d file(s))",
       data.old_rel, data.new_rel, imports_changed, files_changed))
@@ -541,7 +633,13 @@ function movefile.open_preview(old_rel, new_rel)
   end
 
   if #preview.files == 0 then
-    movefile.perform(old_rel, new_rel)
+    -- safe to skip the redundant full-project rewrite scan here
+    -- specifically: this call happens synchronously, immediately after
+    -- movefile.preview() just finished scanning the entire project and
+    -- found nothing to rewrite -- nothing else can have touched the
+    -- project's files in between, so re-scanning to reconfirm "zero
+    -- changes" would just repeat the same I/O for the same answer.
+    movefile.perform(old_rel, new_rel, nil, true)
     return
   end
 
@@ -552,12 +650,7 @@ end
 
 -- prompt for a destination, then open the preview for it
 function movefile.prompt_move(old_abs_path)
-  local project_dir = fsutils.project_dir()
-  local old_rel = old_abs_path
-  if old_rel:sub(1, #project_dir) == project_dir then
-    old_rel = old_rel:sub(#project_dir + 2) -- strip "project_dir" + separator
-  end
-  old_rel = langconfig.to_unix(old_rel)
+  local old_rel = langconfig.to_unix(fsutils.to_project_rel(old_abs_path))
 
   local is_dir = fsutils.is_dir(old_abs_path)
   local prompt_title = is_dir and "Move directory to" or "Move file to"

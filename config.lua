@@ -6,11 +6,32 @@
 --
 -- Each entry needs:
 --   extensions      : list of file extensions (no dot) this language uses
---   import_patterns : list of Lua patterns, each with exactly one capture
---                      group that captures the import/module string
+--   import_patterns : list of Lua patterns, each with exactly one STRING
+--                      capture group (capturing the import/module string)
+--                      bracketed by two POSITION captures -- e.g.
+--                      "foo%s*\"()([%w/]+)()\"" rather than
+--                      "foo%s*\"([%w/]+)\"". The two extra "()" give
+--                      movefile.lua's replace_pattern the string
+--                      capture's exact byte offsets directly, instead of
+--                      having to re-search the matched text for the
+--                      captured substring (which can find the wrong
+--                      occurrence -- see movefile.lua's replace_pattern
+--                      for the case this fixes).
 --   only_relative   : true if imports are relative to the importing file
 --                      (e.g. JS "./foo"); false if they're rooted at the
 --                      project root (e.g. Lua/Python dotted modules)
+--   import_block_patterns (optional)
+--                    : { [pattern_index] = block_pattern }. If set for a
+--                      given import_patterns entry, that pattern is only
+--                      allowed to match inside spans matched by
+--                      block_pattern elsewhere in the same file -- any
+--                      match outside those spans is ignored entirely.
+--                      Used by Go's grouped-import pattern (below) to
+--                      stop it from picking up unrelated quoted strings
+--                      that merely happen to sit on their own indented
+--                      line (e.g. a map/struct literal), which the
+--                      pattern's own local context has no way to rule
+--                      out on its own.
 --   path_to_import(str, importer_dir)
 --                    : converts a project-relative path (or, for
 --                      only_relative languages, a path already made
@@ -98,7 +119,7 @@ local function make_c_family_language(extensions)
       -- matched at all -- there's nothing in the project to rewrite them
       -- to. Matching "anything but a quote" (rather than a %w-style
       -- class) so unusual-but-legal header names/paths aren't missed.
-      "#include%s*\"([^\"]+)\"",
+      "#include%s*\"()([^\"]+)()\"",
     },
     only_relative = true,
     -- Unlike JS/HTML, a quoted C/C++ include is not required to start
@@ -120,7 +141,7 @@ config.languages = {
   lua = {
     extensions = { "lua" },
     import_patterns = {
-      "require%s*%(?%s*[\"']([%w%.%_%-/]+)[\"']%)?",
+      "require%s*%(?%s*[\"']()([%w%.%_%-/]+)()[\"']%)?",
     },
     only_relative = false,
     -- "a/b/c" -> "a.b.c" (dotted, no extension)
@@ -137,9 +158,9 @@ config.languages = {
   javascript = {
     extensions = { "js", "jsx", "ts", "tsx", "mjs", "cjs" },
     import_patterns = {
-      "from%s+[\"'](%.[%w%.%_%-/]+)[\"']",
-      "require%s*%(%s*[\"'](%.[%w%.%_%-/]+)[\"']%s*%)",
-      "import%s*%(%s*[\"'](%.[%w%.%_%-/]+)[\"']%s*%)", -- dynamic import()
+      "from%s+[\"']()(%.[%w%.%_%-/]+)()[\"']",
+      "require%s*%(%s*[\"']()(%.[%w%.%_%-/]+)()[\"']%s*%)",
+      "import%s*%(%s*[\"']()(%.[%w%.%_%-/]+)()[\"']%s*%)", -- dynamic import()
     },
     only_relative = true, -- ignore bare specifiers like "react"
     -- `rel_path` here is already relative to the importer's directory
@@ -160,8 +181,8 @@ config.languages = {
   html = {
     extensions = { "html", "htm" },
     import_patterns = {
-      "src%s*=%s*[\"'](%.[%w%.%_%-/]+)[\"']",  -- <script src="./foo.js">, <img src="./foo.png">
-      "href%s*=%s*[\"'](%.[%w%.%_%-/]+)[\"']",  -- <link href="./foo.css">, <a href="./foo.html">
+      "src%s*=%s*[\"']()(%.[%w%.%_%-/]+)()[\"']",  -- <script src="./foo.js">, <img src="./foo.png">
+      "href%s*=%s*[\"']()(%.[%w%.%_%-/]+)()[\"']",  -- <link href="./foo.css">, <a href="./foo.html">
     },
     only_relative = true,
     -- unlike JS import specifiers, HTML attribute references keep their
@@ -184,17 +205,17 @@ config.languages = {
     extensions = { "css" },
     import_patterns = {
       -- @import "./foo.css";  or  @import './foo.css';
-      "@import%s+[\"'](%.[%w%.%_%-/]+)[\"']",
+      "@import%s+[\"']()(%.[%w%.%_%-/]+)()[\"']",
       -- @import url(./foo.css);  or  @import url('./foo.css');
       -- quotes inside url() are optional per the CSS spec, hence the "?"
-      "@import%s+url%(%s*[\"']?(%.[%w%.%_%-/]+)[\"']?%s*%)",
+      "@import%s+url%(%s*[\"']?()(%.[%w%.%_%-/]+)()[\"']?%s*%)",
       -- generic url(...) references: background-image, @font-face src, etc.
       -- NOTE: this pattern's captures overlap with the "@import url(...)"
       -- one above -- once that pattern rewrites an @import url(...) line,
       -- this one will match the (already-updated) result too and call
       -- import_to_path on the new string, which resolves to itself and
       -- is filtered out as a no-op change. Harmless, just redundant work.
-      "url%(%s*[\"']?(%.[%w%.%_%-/]+)[\"']?%s*%)",
+      "url%(%s*[\"']?()(%.[%w%.%_%-/]+)()[\"']?%s*%)",
     },
     only_relative = true,
     -- like HTML (and unlike JS), a CSS url()/@import reference keeps its
@@ -215,8 +236,8 @@ config.languages = {
   python = {
     extensions = { "py" },
     import_patterns = {
-      "from%s+([%w_%.]+)%s+import",
-      "import%s+([%w_%.]+)",
+      "from%s+()([%w_%.]+)()%s+import",
+      "import%s+()([%w_%.]+)()",
     },
     only_relative = false,
     path_to_import = function(rel_path)
@@ -243,8 +264,8 @@ config.languages = {
       -- "static" as the imported name. (If that ever did happen, it's
       -- harmless: "static" won't match any real file path, so nothing
       -- gets rewritten -- but there's no reason to let it happen.)
-      "import%s+static%s+([%w_%.]+)%s*;",
-      "import%s+([%w_%.]+)%s*;",
+      "import%s+static%s+()([%w_%.]+)()%s*;",
+      "import%s+()([%w_%.]+)()%s*;",
     },
     only_relative = false,
     -- "com/foo/Bar.java" -> "com.foo.Bar" (dotted, no extension)
@@ -268,15 +289,26 @@ config.languages = {
     extensions = { "go" },
     import_patterns = {
       -- single-line form: import "fmt"  /  import alias "some/pkg"
-      "import%s+[%w_]*%s*\"([%w_%.%-/]+)\"",
+      "import%s+[%w_]*%s*\"()([%w_%.%-/]+)()\"",
       -- one entry of a grouped import block, e.g.
       --   import (
       --       "fmt"
       --       alias "some/pkg"
       --   )
-      -- anchored on the leading newline + indentation so an arbitrary
-      -- quoted string elsewhere in the file isn't picked up as an import
-      "\n%s+[%w_]*%s*\"([%w_%.%-/]+)\"",
+      -- The leading-newline-and-indentation shape alone isn't a
+      -- sufficient anchor -- it also matches any other indented,
+      -- standalone quoted string (e.g. a map/struct literal value), so
+      -- import_block_patterns below additionally restricts this pattern
+      -- to only match inside real "import ( ... )" blocks.
+      "\n%s+[%w_]*%s*\"()([%w_%.%-/]+)()\"",
+    },
+    -- restrict pattern #2 (the grouped-import line pattern above) to
+    -- only match inside an actual "import ( ... )" block. Go import
+    -- blocks never contain nested parens, so a non-greedy ".-" up to
+    -- the first ")" is sufficient here without needing real balanced-
+    -- paren matching.
+    import_block_patterns = {
+      [2] = "import%s*%(.-%)",
     },
     only_relative = false,
     -- IMPORTANT CAVEAT, bigger than the ones above: Go doesn't import

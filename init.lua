@@ -7,15 +7,9 @@ local movefile = require "plugins.refactor.movefile"
 local TreeView = require "plugins.treeview"
 local RefactorView = require "plugins.refactor.refactorview"
 
--- TODO: regex support
-
--- TODO: HIGH PRIORITY: check reliability of regex handling logic
--- TODO: HIGH PRIORITY: check reliability of search logic
--- TODO: HIGH PRIORITY: check reliability of replacement logic
--- TODO: HIGH PRIORITY: check reliability of folder-and-its-contents move logic
-
--- REVIEW: remove unnecessary comments
 -- REVIEW: full code review
+
+-- FUTURE_TODO: lua patterns support (?)
 
 -- `scope_dir`, if given, is a project-relative folder path limiting the
 -- search/replacement to files nested under it; nil searches the whole

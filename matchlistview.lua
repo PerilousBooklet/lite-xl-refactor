@@ -185,12 +185,30 @@ function MatchListView:get_content_bounds()
   return x, y, self.size.x, self.size.y - self.button_height
 end
 
+-- Computes the same (last_y, last_h) each_visible_row's full walk would
+-- have ended on, without actually creating a coroutine or iterating
+-- every visible match row: every row (file or match) always has the
+-- same height `lh`, so the total content height is just the sum of
+-- each item's current (already zoom/animation-aware) height, and the
+-- final row's own height is always `lh` regardless of whether the last
+-- item happens to be expanded or collapsed.
 function MatchListView:get_scrollable_size()
   local _, y_off = self:get_content_offset()
-  local last_y, last_h = y_off, 0
-  for _, item, match, x, y, w, h in self:each_visible_row() do
-    last_y, last_h = y, h
+  local lh = self.font:get_height() + style.padding.y
+
+  local last_y, last_h
+  if #self.results == 0 then
+    last_y, last_h = y_off, 0
+  else
+    local total = 0
+    for _, item in ipairs(self.results) do
+      total = total + self:get_item_height(item).current
+    end
+    local start_y = y_off + style.padding.y + self.yoffset
+    last_h = lh
+    last_y = start_y + total - lh
   end
+
   if not config.scroll_past_end then
     return last_y + last_h - y_off + style.padding.y
   end
@@ -346,11 +364,16 @@ end
 -- ---------------------------------------------------------------------------
 
 function MatchListView:update()
-  local expanding = self.expanding[1]
-  if expanding then
-    self:move_towards(expanding, "current", expanding.target, nil, "matchlistview")
-    if expanding.current == expanding.target then
-      table.remove(self.expanding, 1)
+  -- animate every pending expand (not just the first): if the user
+  -- expands file A, then before A's grow animation finishes expands
+  -- file B too, B's row must start animating immediately -- it
+  -- shouldn't visually sit frozen until A's animation completes and is
+  -- dequeued, which is what iterating only self.expanding[1] would do.
+  for i = #self.expanding, 1, -1 do
+    local h = self.expanding[i]
+    self:move_towards(h, "current", h.target, nil, "matchlistview")
+    if h.current == h.target then
+      table.remove(self.expanding, i)
     end
   end
 

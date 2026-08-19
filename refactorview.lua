@@ -1,10 +1,10 @@
 -- A View (modeled directly on core/logview.lua) that shows the results of a
--- project-wide (or folder-scoped) "find" as a list of files. Each file row
--- can be clicked to unroll a "curtain" showing every matching line inside
--- that file. Both file rows and individual match rows have a small
--- checkbox at the start of the row that toggles whether that file/line
--- should be included when the replacement is finally applied via the
--- button drawn at the bottom of the view.
+-- project-wide "find" as a list of files. Each file row can be clicked to
+-- unroll a "curtain" showing every matching line inside that file. Both file
+-- rows and individual match rows have a small checkbox at the start of the
+-- row that toggles whether that file/line should be included when the
+-- replacement is finally applied via the button drawn at the bottom of the
+-- view.
 --
 -- The generic scrolling/zoom/checkbox/curtain machinery all lives in
 -- matchlistview.lua now (shared with MoveView); this file only supplies
@@ -18,15 +18,10 @@ local fsutils = require "plugins.refactor.fsutils"
 local viewutils = require "plugins.refactor.viewutils"
 local MatchListView = require "plugins.refactor.matchlistview"
 
--- escapes a plain string so it can be safely used as a Lua pattern
-local function escape_pattern(text)
-  return (text:gsub("[%(%)%.%%%+%-%*%?%[%]%^%$]", "%%%1"))
-end
-
--- escapes a plain replacement string so gsub doesn't treat "%" specially
-local function escape_replacement(text)
-  return (text:gsub("%%", "%%%%"))
-end
+-- NOTE: replacement is done via plain column-precise string slicing (see
+-- apply_replacement below), not string.gsub(), so no pattern-escaping
+-- helpers are needed here -- find_text and replace_text are both used
+-- as literal text throughout this file.
 
 -- ---------------------------------------------------------------------------
 -- RefactorView
@@ -36,32 +31,23 @@ local RefactorView = MatchListView:extend()
 
 function RefactorView:__tostring() return "RefactorView" end
 
--- `scope_dir`, if given, is a project-relative folder path; the search
--- (and eventual replacement) is limited to files nested under it. nil
--- means "search the whole project", same as before.
-function RefactorView:new(find_text, replace_text, scope_dir)
+function RefactorView:new(find_text, replace_text)
   RefactorView.super.new(self)
 
   self.find_text = find_text
   self.replace_text = replace_text or ""
-  self.scope_dir = scope_dir
 
   self.searching = true
   self.files_scanned = 0
   self.files_total = 0
 
   core.status_view:show_message("i", style.text,
-    self.scope_dir
-      and ("click a file to expand it, click a square to (de)select, then hit Replace (scoped to " .. self.scope_dir .. ")")
-      or "click a file to expand it, click a square to (de)select, then hit Replace")
+    "click a file to expand it, click a square to (de)select, then hit Replace")
 
   self:begin_search()
 end
 
 function RefactorView:get_name()
-  if self.scope_dir then
-    return "Refactor: " .. self.find_text .. " (in " .. self.scope_dir .. ")"
-  end
   return "Refactor: " .. self.find_text
 end
 
@@ -112,21 +98,30 @@ end
 -- searching the project
 -- ---------------------------------------------------------------------------
 
+-- Heuristic "is this binary" check: looks for a NUL byte in the first
+-- chunk of the file, same approach git and most editors use. Not
+-- foolproof -- a binary format whose first BINARY_SNIFF_BYTES happen to
+-- avoid any NUL byte (some headers/metadata-heavy formats) can slip
+-- through and get treated, and potentially rewritten, as text. Bumped
+-- from the original 4KB to 8KB to shrink that window somewhat; going
+-- much larger stops being a meaningful improvement relative to the
+-- extra I/O cost of sampling more of every project file.
+local BINARY_SNIFF_BYTES = 8192
+
 local function is_probably_binary(chunk)
   return chunk:find("\0", 1, true) ~= nil
 end
 
 -- delegates to fsutils so this listing logic is shared with movefile.lua
--- instead of being duplicated in two places. `scope_dir`, if given,
--- limits the listing to that project-relative folder.
-local function collect_project_files(scope_dir)
-  return fsutils.collect_project_files(scope_dir)
+-- instead of being duplicated in two places
+local function collect_project_files()
+  return fsutils.collect_project_files()
 end
 
 function RefactorView:begin_search()
   local view = self
   core.add_thread(function()
-    local files = collect_project_files(view.scope_dir)
+    local files = collect_project_files()
     view.files_total = #files
 
     for _, relname in ipairs(files) do
@@ -139,7 +134,7 @@ function RefactorView:begin_search()
 
       local fp = io.open(abs, "rb")
       if fp then
-        local head = fp:read(4096) or ""
+        local head = fp:read(BINARY_SNIFF_BYTES) or ""
         if not is_probably_binary(head) then
           fp:seek("set", 0)
           local content = fp:read("*a") or ""
@@ -147,17 +142,29 @@ function RefactorView:begin_search()
 
           local matches = {}
           local lineno = 0
+          local find_len = #view.find_text
           for line in (content .. "\n"):gmatch("([^\n]*)\n") do
             lineno = lineno + 1
-            local col = line:find(view.find_text, 1, true)
-            if col then
+            -- loop rather than a single find(): a line can contain the
+            -- search text more than once, and every occurrence needs to
+            -- be its own reviewable/selectable match, not just the first
+            local init = 1
+            while true do
+              local col = line:find(view.find_text, init, true)
+              if not col then break end
               table.insert(matches, {
                 line = lineno,
                 col = col,
                 text = line,
                 selected = true,
-                len = #view.find_text,
+                len = find_len,
               })
+              init = col + find_len
+              -- guard against a zero-length find_text looping forever
+              -- (shouldn't happen -- the command view rejects an empty
+              -- search string -- but cheap insurance against a caller
+              -- that bypasses that prompt)
+              if find_len == 0 then break end
             end
           end
 
@@ -222,20 +229,44 @@ function RefactorView:apply_replacement()
         for line in (content .. "\n"):gmatch("([^\n]*)\n") do
           lineno = lineno + 1
           local replaced = line
+
+          -- Splice each selected match directly by its recorded
+          -- (col, len) instead of a line-wide gsub(). This matters once
+          -- a line can contain the search text more than once (see
+          -- begin_search): a plain gsub() would rewrite every
+          -- occurrence on the line regardless of which one(s) the user
+          -- actually selected, and would undercount matches_changed.
+          -- Splicing right-to-left (highest column first) also means a
+          -- later splice's column offset is never invalidated by an
+          -- earlier one changing the line's length, and -- unlike
+          -- re-running gsub() per match -- never risks a second pass
+          -- re-matching text that a previous splice on this same line
+          -- just inserted (which could otherwise happen if
+          -- replace_text itself contains find_text as a substring,
+          -- e.g. "foo" -> "foobar").
+          local line_matches = {}
           for _, match in ipairs(item.matches) do
             if match.line == lineno and match.selected then
-              replaced = replaced:gsub(
-                escape_pattern(self.find_text),
-                escape_replacement(self.replace_text)
-              )
-              matches_changed = matches_changed + 1
+              table.insert(line_matches, match)
             end
           end
+          table.sort(line_matches, function(a, b) return a.col > b.col end)
+
+          for _, match in ipairs(line_matches) do
+            local s, e = match.col, match.col + match.len - 1
+            replaced = replaced:sub(1, s - 1) .. self.replace_text .. replaced:sub(e + 1)
+            matches_changed = matches_changed + 1
+          end
+
           table.insert(out, replaced)
         end
-        -- gmatch with the trailing "\n" trick above adds one extra empty
-        -- line at the end; drop it to preserve the original file ending.
-        if out[#out] == "" and content:sub(-1) ~= "\n" then
+        -- gmatch with the trailing "\n" trick above always adds one extra
+        -- empty line at the end; drop it unconditionally so it doesn't
+        -- get re-added as a real line below. (Previously this only
+        -- fired when the file did NOT end in "\n" -- i.e. the one case
+        -- where it wasn't needed -- which meant every file that already
+        -- ended in "\n" grew an extra blank line on each apply.)
+        if out[#out] == "" then
           table.remove(out)
         end
 

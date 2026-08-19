@@ -51,7 +51,14 @@ function MoveView:__tostring() return "MoveView" end
 function MoveView:new(preview)
   MoveView.super.new(self)
 
-  self.checkboxes = false
+  -- checkboxes enabled: this lets the user deselect individual
+  -- references before the move happens, which on_button_pressed below
+  -- now actually honors via movefile.perform's `selection` argument.
+  -- (Previously this was false, which routed every row click straight
+  -- to open_match instead of toggling selection -- there was no way to
+  -- deselect anything, even though movefile.lua's selection/
+  -- make_line_selector machinery existed to support exactly this.)
+  self.checkboxes = true
 
   self.old_rel = preview.old_rel
   self.new_rel = preview.new_rel
@@ -60,7 +67,7 @@ function MoveView:new(preview)
   self.results = preview.files
 
   core.status_view:show_message("i", style.text,
-    "click a file to expand it, click a line to jump to it, then hit Move")
+    "click a file to expand it, click a square to (de)select, click a line to jump to it, then hit Move")
 end
 
 function MoveView:get_name()
@@ -97,12 +104,37 @@ end
 -- ---------------------------------------------------------------------------
 
 function MoveView:get_button_label()
-  local _, total = self:count_selected()
+  local selected, total = self:count_selected()
   if total == 0 then
     return "Move (no references to update)"
   end
-  return string.format("Move & update %d reference%s",
-    total, total == 1 and "" or "s")
+  if selected == total then
+    return string.format("Move & update %d reference%s",
+      total, total == 1 and "" or "s")
+  end
+  return string.format("Move & update %d/%d selected reference%s",
+    selected, total, total == 1 and "" or "s")
+end
+
+-- Builds the sparse `selection` table movefile.perform expects: only
+-- files with at least one deselected line are included at all, and
+-- within those, only the specific deselected line numbers are recorded
+-- (as `false`) -- see movefile.lua's make_line_selector for how this is
+-- consumed. Everything not mentioned is treated as selected by default,
+-- so a file where every match is still selected is correctly omitted
+-- entirely rather than needing to be listed.
+local function build_selection(results)
+  local selection = nil
+  for _, item in ipairs(results) do
+    for _, match in ipairs(item.matches) do
+      if not match.selected then
+        selection = selection or {}
+        selection[item.filename] = selection[item.filename] or {}
+        selection[item.filename][match.line] = false
+      end
+    end
+  end
+  return selection
 end
 
 function MoveView:on_button_pressed()
@@ -113,9 +145,10 @@ function MoveView:on_button_pressed()
   -- safe.
   local movefile = require "plugins.refactor.movefile"
 
-  -- no checkboxes here, so there's nothing to deselect -- every detected
-  -- reference gets updated, same as calling perform() with no preview at all
-  movefile.perform(self.old_rel, self.new_rel)
+  -- pass through whichever references the user deselected (nil if none
+  -- were, meaning "apply everything" -- see movefile.perform)
+  local selection = build_selection(self.results)
+  movefile.perform(self.old_rel, self.new_rel, selection)
 end
 
 return MoveView

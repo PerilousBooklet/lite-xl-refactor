@@ -56,14 +56,17 @@ end
 -- own public draw_item_chevron off-screen for both expanded states, then
 -- put the real renderer.draw_text back. From then on callers draw the
 -- chevron themselves with their own independent, resizable copy of that
--- font. Cached at module scope so this only ever happens once, no matter
--- how many views end up using it.
+-- font. Attempted at most once at module scope (success OR failure is
+-- memoized -- see chevron_discovery_attempted below), no matter how
+-- many views end up using it.
 -- ---------------------------------------------------------------------------
 
 local chevron_glyphs = nil -- { font = <icon font>, collapsed = "..", expanded = ".." }, discovered lazily
+local chevron_discovery_attempted = false -- distinct from chevron_glyphs being nil: without this, a FAILED discovery would silently retry the (expensive: monkey-patches renderer.draw_text and invokes TreeView.draw_item_chevron) discovery hack on every single call -- i.e. every visible file row, every frame, forever, instead of falling back once to the cheap plain-text arrow
 
 local function discover_chevron_glyphs()
-  if chevron_glyphs then return chevron_glyphs end
+  if chevron_discovery_attempted then return chevron_glyphs end
+  chevron_discovery_attempted = true
 
   local captured = {}
   local real_draw_text = renderer.draw_text

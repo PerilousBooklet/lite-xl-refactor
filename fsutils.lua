@@ -65,19 +65,30 @@ end
 --- Copy source file to destination path
 -- @param string source_abs_filename Absolute source filename
 -- @param string dest_abs_filename Absolute destination filename
+-- @return boolean true on success, false on failure (logged via core.error)
 function fsutils.copy_file(source_abs_filename, dest_abs_filename)
-  local source_file = io.open(source_abs_filename, "rb")
-  local dest_file = io.open(dest_abs_filename, "wb")
-  if source_file ~= nil and dest_file ~= nil then
-    local chunk_size = 2^13 -- 8KB
-    while true do
-      local chunk = source_file:read(chunk_size)
-      if not chunk then break end
-      dest_file:write(chunk)
-    end
-    source_file:close()
-    dest_file:close()
+  local source_file, src_err = io.open(source_abs_filename, "rb")
+  if not source_file then
+    core.error("[refactor] failed to open source \"%s\": %s", source_abs_filename, tostring(src_err))
+    return false
   end
+
+  local dest_file, dst_err = io.open(dest_abs_filename, "wb")
+  if not dest_file then
+    source_file:close() -- don't leak the source handle just because the destination failed
+    core.error("[refactor] failed to open destination \"%s\": %s", dest_abs_filename, tostring(dst_err))
+    return false
+  end
+
+  local chunk_size = 2^13 -- 8KB
+  while true do
+    local chunk = source_file:read(chunk_size)
+    if not chunk then break end
+    dest_file:write(chunk)
+  end
+  source_file:close()
+  dest_file:close()
+  return true
 end
 
 function fsutils.project_dir()
@@ -85,56 +96,41 @@ function fsutils.project_dir()
 end
 
 --- Converts an absolute path to a project-relative, unix-style path.
--- Shared by movefile.lua (move destination prompts) and init.lua (the
--- folder-scoped refactor context-menu command) so both compute this the
--- same way.
+-- Strips any trailing separator(s) from project_dir and any leading
+-- separator(s) from the remainder itself, rather than assuming exactly
+-- one separator sits between them -- a bare `#project_dir + 2` offset
+-- (as movefile.lua used to compute inline) silently mis-slices the
+-- relative path if project_dir ever has a trailing separator.
 -- @param string abs_path Absolute path, expected to be inside the project
 function fsutils.to_project_rel(abs_path)
-  local project_dir = fsutils.project_dir()
+  local project_dir = fsutils.project_dir():gsub("[/\\]+$", "")
   local rel = abs_path
   if rel:sub(1, #project_dir) == project_dir then
-    rel = rel:sub(#project_dir + 2) -- strip "project_dir" + separator
+    rel = rel:sub(#project_dir + 1)
   end
+  rel = rel:gsub("^[/\\]+", "")
   return (rel:gsub("\\", "/"))
 end
 
 --- Lists every regular file in the project, as paths relative to the
 -- project root. Prefers core's own (already-filtered, already-ignored-dirs)
 -- index when available, falling back to a manual recursive scan.
--- Shared by refactorview.lua (project-wide or folder-scoped find) and
--- movefile.lua (import-reference scanning) so both stay in sync.
--- @param string|nil dir_rel If given, only files nested under this
---        project-relative folder are returned. nil/empty means the
---        whole project.
-function fsutils.collect_project_files(dir_rel)
-  local prefix = nil
-  if dir_rel and dir_rel ~= "" then
-    prefix = (dir_rel:gsub("\\", "/"):gsub("/+$", "")) .. "/"
-  end
+-- Shared by refactorview.lua (project-wide find) and movefile.lua
+-- (import-reference scanning) so both stay in sync.
+function fsutils.collect_project_files()
+  local files = {}
 
-  local function matches_prefix(relname)
-    if not prefix then return true end
-    relname = relname:gsub("\\", "/")
-    return relname:sub(1, #prefix) == prefix
-  end
-
-  -- NOTE: checking #core.project_files > 0 here (rather than the old
-  -- "if #files > 0 then return files end" after filtering) matters for
-  -- the scoped case: a folder can legitimately contain zero matching
-  -- files, and that must return an empty list, not silently fall through
-  -- to a full unscoped scan of the whole project.
-  if core.project_files and #core.project_files > 0 then
-    local files = {}
+  if core.project_files then
     for _, entry in ipairs(core.project_files) do
-      if entry.type == "file" and matches_prefix(entry.filename) then
+      if entry.type == "file" then
         table.insert(files, entry.filename)
       end
     end
-    return files
   end
 
+  if #files > 0 then return files end
+
   -- fallback: walk the project directory manually
-  local files = {}
   local function scan(dir, rel)
     local list = system.list_dir(dir) or {}
     for _, name in ipairs(list) do
@@ -145,7 +141,7 @@ function fsutils.collect_project_files(dir_rel)
         if info then
           if info.type == "dir" then
             scan(abs, relname)
-          elseif matches_prefix(relname) then
+          else
             table.insert(files, relname)
           end
         end
